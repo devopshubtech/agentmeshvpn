@@ -12,6 +12,8 @@
 #   ./install.sh --no-tunnel                       no public URL (LAN only); default is a free
 #                                                  trycloudflare.com URL, kept current when it changes
 #   ./install.sh --no-exit-node                    do not make this Mac the exit node
+#   ./install.sh --exit-nodes N                    number of exit nodes on this Mac (default and minimum 4: <name>-exit-1..4)
+#   ./install.sh --reset-exit-nodes                register the exit nodes again (new identities)
 #   ./install.sh --rendezvous-token <github-token> publish the current URL to the app's rendezvous gist
 #                [--rendezvous-gist <id>]           (needed for 6-digit codes; token needs only the "gist" scope)
 #   ./install.sh --telegram-token <bot-token> --telegram-chat <chat-id> [--dashboard-url <url>]
@@ -37,7 +39,7 @@ DEFAULT_RENDEZVOUS_GIST=9b876c950f541c735c8a817c96362ca9
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\n>> %s\n' "$*"; }
 
-PUBLIC_URL="" TUNNEL_TOKEN="" QUICK_TUNNEL="" AGENT_TOKEN="" DATABASE_URL="" UNINSTALL="" PURGE="" RDV_TOKEN="" RDV_GIST="" TG_TOKEN="" TG_CHAT="" DASH_URL="" SET_ADMIN="" NO_TUNNEL="" NO_EXIT=""
+PUBLIC_URL="" TUNNEL_TOKEN="" QUICK_TUNNEL="" AGENT_TOKEN="" DATABASE_URL="" UNINSTALL="" PURGE="" RDV_TOKEN="" RDV_GIST="" TG_TOKEN="" TG_CHAT="" DASH_URL="" SET_ADMIN="" NO_TUNNEL="" NO_EXIT="" RESET_EXIT="" EXIT_NODES=${AM_EXIT_NODES:-4}
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +49,8 @@ while [ $# -gt 0 ]; do
     --quick-tunnel) QUICK_TUNNEL=1; shift ;; # the default; kept for older instructions
     --no-tunnel)    NO_TUNNEL=1; shift ;;
     --no-exit-node) NO_EXIT=1; shift ;;
+    --exit-nodes)   EXIT_NODES=${2:?--exit-nodes needs a number}; shift 2 ;;
+    --reset-exit-nodes) RESET_EXIT=1; shift ;;
     --agent-token)  AGENT_TOKEN=${2:?--agent-token needs a value}; shift 2 ;;
     --database-url) DATABASE_URL=${2:?--database-url needs a value}; shift 2 ;;
     --rendezvous-token) RDV_TOKEN=${2:?--rendezvous-token needs a value}; shift 2 ;;
@@ -57,7 +61,7 @@ while [ $# -gt 0 ]; do
     --uninstall)    UNINSTALL=1; shift ;;
     --purge)        PURGE=1; shift ;;
     --set-admin)    SET_ADMIN=1; shift ;;
-    -h|--help)      sed -n '3,29p' "$0"; exit 0 ;;
+    -h|--help)      sed -n '3,31p' "$0"; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
@@ -90,6 +94,7 @@ svc_start() { launchctl bootstrap system "$(plist "$1")" 2>/dev/null || launchct
 # ---- Uninstall
 if [ -n "$UNINSTALL" ]; then
   for s in $SERVICES; do svc_stop "$s"; rm -f "$(plist "$s")"; done
+  for f in "$LAUNCHD_DIR"/com.agentmesh.exit*.plist; do [ -f "$f" ] || continue; b=$(basename "$f" .plist); launchctl bootout "system/$b" 2>/dev/null || true; rm -f "$f"; done
   if [ -n "$PURGE" ]; then rm -rf "${PREFIX:?}"; echo "AgentMesh server removed (settings, keys and certificates deleted)."
   else rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/web"; echo "AgentMesh server removed. Settings kept in $ETC (use --purge to delete)."; fi
   echo "The database itself is not touched."
@@ -105,6 +110,7 @@ for s in $SERVICES; do svc_stop "$s"; done
 mkdir -p "$PREFIX" "$ETC/certs" "$LOG" "$PREFIX/var/caddy"
 rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/web"
 cp -R "$HERE/bin" "$HERE/web" "$PREFIX/"
+[ -x "$HERE/agent/agentmesh-agent" ] && cp "$HERE/agent/agentmesh-agent" "$PREFIX/bin/agentmesh-agent"
 for c in control-api agent-gateway worker amctl; do ln -sf agentmesh-server "$PREFIX/bin/$c"; done
 xattr -dr com.apple.quarantine "$PREFIX/bin" 2>/dev/null || true
 chown -R "root:$ROOT_GROUP" "$PREFIX/bin" "$PREFIX/web"
@@ -334,21 +340,42 @@ fi
 # exit agent. Enrolled automatically with a single-use token from this server.
 AGENT_PLIST=${AM_AGENT_PLIST:-/Library/LaunchDaemons/io.agentmesh.agent.plist}
 AGENT_CONF="${AM_AGENT_STATE:-/Library/Application Support/AgentMesh}/agent.json"
+exit_nodes() { # N exit agents on this Mac, each its own launchd service and its own name
+  local n=1 host name S names tok cmd
+  # Failover needs several nodes, so there are always at least 4.
+  case "$EXIT_NODES" in ""|*[!0-9]*) EXIT_NODES=4 ;; esac
+  [ "$EXIT_NODES" -ge 4 ] || EXIT_NODES=4
+  host=$(hostname -s)
+  names=$(as_user env AGENTMESH_DATABASE_URL="$(get_env AGENTMESH_DATABASE_URL)" "$PREFIX/bin/amctl" device-names 2>/dev/null || true)
+  while [ "$n" -le "$EXIT_NODES" ]; do
+    name="$host-exit-$n"; S="$PREFIX/var/exit$n"
+    svc_stop "exit$n"
+    if [ -n "$RESET_EXIT" ] || [ ! -f "$S/agent.json" ] || ! printf '%s\n' "$names" | grep -qxF "$name"; then
+      say "registering exit node $name"
+      rm -rf "$S"; as_user mkdir -p "$S"
+      tok=$(as_user env AGENTMESH_DATABASE_URL="$(get_env AGENTMESH_DATABASE_URL)" "$PREFIX/bin/amctl" local-enroll-token "$name") \
+        || die "could not create an enrollment token for $name"
+      as_user env AGENTMESH_DEVICE_NAME="$name" "$PREFIX/bin/agentmesh-agent" enroll --server https://127.0.0.1:18443 --token "$tok" \
+        --ca-file "$ETC/certs/ca.pem" --enable-exit-node --force --state-dir "$S" </dev/null \
+        || die "could not register $name; see the message above (is the gateway on port 18443 up? see $LOG/agent-gateway.log)"
+    fi
+    cmd='export AGENTMESH_DEVICE_NAME="'$name'"; exec "$P/bin/agentmesh-agent" run --state-dir "$P/var/exit'$n'"'
+    write_plist "exit$n" "$cmd"
+    svc_start "exit$n"
+    n=$((n+1))
+  done
+}
+
 if [ -n "$NO_EXIT" ]; then
   : # --no-exit-node
-elif [ -z "$AGENT_TOKEN" ] && [ -f "$AGENT_PLIST" ] && grep -q '"allow_exit_node": *true' "$AGENT_CONF" 2>/dev/null \
-     && grep -q '127.0.0.1:18443' "$AGENT_CONF" 2>/dev/null; then
-  say "this Mac is already the exit node"
-else
-  say "making this Mac the exit node (phones use its internet)"
-  if [ -z "$AGENT_TOKEN" ]; then
-    AGENT_TOKEN=$(as_user env AGENTMESH_DATABASE_URL="$(get_env AGENTMESH_DATABASE_URL)" \
-      "$PREFIX/bin/amctl" local-enroll-token "$(hostname -s) (AgentMesh server)") \
-      || die "could not create an enrollment token for this Mac"
-  fi
+elif [ -n "$AGENT_TOKEN" ]; then
+  say "installing this Mac's agent with the token you gave"
   sh "$HERE/agent/install.sh" --server https://127.0.0.1:18443 --token "$AGENT_TOKEN" \
     --ca-file "$ETC/certs/ca.pem" --enable-exit-node --force \
     || die "could not install this Mac's agent; see the message above"
+else
+  [ -x "$PREFIX/bin/agentmesh-agent" ] || die "agent/agentmesh-agent not found in the package; extract the whole package first"
+  exit_nodes
 fi
 
 DB=$(get_env AGENTMESH_DATABASE_URL)

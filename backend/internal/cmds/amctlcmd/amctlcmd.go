@@ -41,6 +41,8 @@ Usage:
   amctl local-enroll-token [DESC]      print a single-use, auto-approved 15-minute enrollment token
                                        (the server installer uses it to make this machine an exit node)
                                        (AGENTMESH_ADMIN_EMAIL, AGENTMESH_ADMIN_PASSWORD, AGENTMESH_DATABASE_URL)
+  amctl device-names                   print the name of every registered device, one per line
+                                       (the server installer checks its exit nodes are registered)
   amctl health URL                     exit 0 if URL answers 200 (container health checks)
 `
 
@@ -77,6 +79,8 @@ func Main() {
 		err = devCerts(os.Args[2:])
 	case "local-enroll-token":
 		err = localEnrollToken(os.Args[2:])
+	case "device-names":
+		err = deviceNames()
 	case "set-admin":
 		err = setAdmin()
 	case "migrate":
@@ -256,6 +260,32 @@ func localEnrollToken(args []string) error {
 	}
 	fmt.Println(secret)
 	return nil
+}
+
+func deviceNames() error {
+	url := os.Getenv("AGENTMESH_DATABASE_URL")
+	if url == "" {
+		return fmt.Errorf("AGENTMESH_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	rows, err := pool.Query(ctx, `SELECT name FROM devices ORDER BY name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		fmt.Println(n)
+	}
+	return rows.Err()
 }
 
 // setAdmin reads the credentials from the environment, not argv, so the

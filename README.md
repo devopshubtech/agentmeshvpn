@@ -63,6 +63,7 @@ Layout under the install folder (example `/usr/local/.app/.svc/.agent/`):
 | Runtime data | `<prefix>/var/` |
 | Web dashboard files | `<prefix>/web/` (a copy also ships in `agentmesh-server/web/`) |
 
+- **Exit nodes:** the installer creates **4 exit nodes** on the Mac (`<name>-exit-1` to `-4`, about 10 MB of memory each). If one goes offline, phones move to another online one on their own, with the same QR code. Re-running it re-registers any that are missing. `--exit-nodes N` adds more (never fewer than 4), `--reset-exit-nodes` registers them again.
 - **Just run `./install.sh`.** It asks only for the **database URL** and the dashboard **admin email and password**, then: installs the server, makes **this Mac the exit node** (phones use its internet, like the Windows setup), and gives it a free public `trycloudflare.com` URL that is kept current when it changes. Re-running it updates and offers to change the admin login (`--set-admin` goes straight there).
 - **Database:** use the **direct (unpooled)** connection string; the installer refuses a `-pooler` one. To skip the question, put `AM_DATABASE_URL=<url>` in a file named `agentmesh-db.env` next to `install.sh`. Never commit or publish that file; it is git-ignored.
 - **Public URL (permanent):** create a named tunnel in Cloudflare Zero Trust with a public hostname whose service is `https://localhost:13443` with *No TLS Verify*, then run `./install.sh --tunnel-token <token> --public-url https://api.example.com`.

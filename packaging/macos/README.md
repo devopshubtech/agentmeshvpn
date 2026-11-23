@@ -27,7 +27,7 @@ sudo ./install.sh --prefix /usr/local/.app/.svc/.agent
 sudo ./install.sh --prefix /full/path/you/choose
 ```
 
-It asks for the database URL (direct/unpooled Postgres, for example Neon) and the dashboard admin login, makes this Mac the exit node, and starts a free public `trycloudflare.com` address that is kept current. The other options are listed at the top of `install.sh`.
+It creates **4 exit nodes** on this Mac (`<name>-exit-1..4`, about 10 MB each; phones fail over between them on the same QR code; `--exit-nodes N` for more, `--reset-exit-nodes` to register again). It asks for the database URL (direct/unpooled Postgres, for example Neon) and the dashboard admin login, makes this Mac the exit node, and starts a free public `trycloudflare.com` address that is kept current. The other options are listed at the top of `install.sh`.
 
 ## Layout under the install folder
 

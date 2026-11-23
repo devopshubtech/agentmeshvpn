@@ -37,7 +37,13 @@ func machineIDHash(ctx context.Context) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// hostname is the name this device is registered and reported under. The
+// server installer runs several exit agents on one Mac and gives each its own
+// name through AGENTMESH_DEVICE_NAME; otherwise it is the machine's hostname.
 func hostname() string {
+	if n := strings.TrimSpace(os.Getenv("AGENTMESH_DEVICE_NAME")); n != "" {
+		return n
+	}
 	h, _ := os.Hostname()
 	return h
 }
