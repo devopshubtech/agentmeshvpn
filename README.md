@@ -7,12 +7,12 @@ Use your computer's internet on your phone, from anywhere: a self-hosted exit no
 > ## ⬇️ Direct downloads
 > | App | Direct link |
 > |---|---|
-> | 📱 **Android app v0.6.4 (APK)** | **[Download agentmesh-control-v0.6.4.apk](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.4/agentmesh-control-v0.6.4.apk)** · always-latest: [agentmesh-control.apk](https://github.com/devopshubtech/AgentMesh/releases/latest/download/agentmesh-control.apk) |
+> | 📱 **Android app v0.7.0 (APK)** | **[Download agentmesh-control-v0.7.0.apk](https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-control-v0.7.0.apk)** · always-latest: [agentmesh-control.apk](https://github.com/devopshubtech/AgentMesh/releases/latest/download/agentmesh-control.apk) |
 > | 🍎 **macOS agent, Apple Silicon (M1–M4)** | **[agentmesh-agent_0.6.3_darwin_arm64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_darwin_arm64.tar.gz)** |
 > | 🍎 **macOS agent, Intel** | **[agentmesh-agent_0.6.3_darwin_amd64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_darwin_amd64.tar.gz)** |
 > | 🪟 **Windows agent (x64)** | **[agentmesh-agent_0.6.3_windows_amd64.zip](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_windows_amd64.zip)** |
 > | 🐧 **Linux agent (.deb x64)** | **[agentmesh-agent_0.6.3_amd64.deb](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_amd64.deb)** |
-> | 🖥️ **Server for Mac mini (native, Apple Silicon)** | **[agentmesh-server_0.6.4_macos_arm64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.4/agentmesh-server_0.6.4_macos_arm64.tar.gz)** · Intel: [agentmesh-server_0.6.4_macos_amd64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.4/agentmesh-server_0.6.4_macos_amd64.tar.gz) · see [Run the server on a Mac mini](#run-the-server-on-a-mac-mini) |
+> | 🖥️ **Server for Mac mini (native, Apple Silicon)** | **[agentmesh-server_0.7.0_macos_arm64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz)** · Intel: [agentmesh-server_0.7.0_macos_amd64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_amd64.tar.gz) · see [Run the server on a Mac mini](#run-the-server-on-a-mac-mini) |
 >
 > See [all downloads](#downloads) for ARM, `.rpm`, Raspberry Pi and one-line installers. Every release: [Releases page](https://github.com/devopshubtech/AgentMesh/releases/latest).
 >
@@ -119,9 +119,11 @@ Phases 2 to 4 (macOS, artifacts and updates, metrics, mobile, remote sessions) a
 
 Every file is attached to this repo's **[Releases](https://github.com/devopshubtech/AgentMesh/releases/latest)**, along with a `SHA256SUMS` file.
 
-| Platform | Download (v0.6.3) |
+| Platform | Download (app and server v0.7.0, agents v0.6.3) |
 |---|---|
 | **Android app** (control + exit node) | [agentmesh-control.apk](https://github.com/devopshubtech/AgentMesh/releases/latest/download/agentmesh-control.apk) |
+| Mac mini server (native), Apple Silicon | [agentmesh-server_0.7.0_macos_arm64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz) |
+| Mac mini server (native), Intel | [agentmesh-server_0.7.0_macos_amd64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_amd64.tar.gz) |
 | Windows x64 | [agentmesh-agent_0.6.3_windows_amd64.zip](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_windows_amd64.zip) |
 | Windows ARM64 | [agentmesh-agent_0.6.3_windows_arm64.zip](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_windows_arm64.zip) |
 | macOS Apple Silicon | [agentmesh-agent_0.6.3_darwin_arm64.tar.gz](https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.3/agentmesh-agent_0.6.3_darwin_arm64.tar.gz) |
