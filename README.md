@@ -26,7 +26,7 @@ Native install, no Docker: the AgentMesh server, NATS, a Caddy web front and clo
 
 ```bash
 # Apple Silicon (M1–M4); use _macos_amd64 on an Intel Mac
-curl -fLO https://github.com/devopshubtech/agentmeshvpn/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz
+curl -fLO https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz
 tar -xzf agentmesh-server_0.7.0_macos_arm64.tar.gz && cd agentmesh-server
 sudo ./install.sh --prefix /full/path/where/you/want/it
 ```
