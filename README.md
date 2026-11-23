@@ -26,10 +26,21 @@ Native install, no Docker: the AgentMesh server, NATS, a Caddy web front and clo
 
 ```bash
 # Apple Silicon (M1–M4); use _macos_amd64 on an Intel Mac
-curl -fLO https://github.com/devopshubtech/AgentMesh/releases/download/v0.6.4/agentmesh-server_0.6.4_macos_arm64.tar.gz
-tar -xzf agentmesh-server_0.6.4_macos_arm64.tar.gz && cd agentmesh-server
-./install.sh
+curl -fLO https://github.com/devopshubtech/agentmeshvpn/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz
+tar -xzf agentmesh-server_0.7.0_macos_arm64.tar.gz && cd agentmesh-server
+sudo ./install.sh --prefix /full/path/where/you/want/it
 ```
+
+### Upgrade an existing Mac mini install (for example 0.6.x to 0.7.0)
+
+Phones on the 0.7 apps need server 0.7: older servers answer `route not found` / `unknown field "client_id"` because they lack the approval, limits and failover routes.
+
+1. Copy the new package to the Mac mini and unpack it (commands above, or `dist/release/` after `scripts/build-macos-server.sh v0.7.0`).
+2. Run the installer with **the same folder the server is installed in now**: `sudo ./install.sh --prefix /that/folder`. There is no default folder, so it is always your choice; without `--prefix` it asks.
+3. Answer **N** to "Change the dashboard admin login?". The database URL, keys, TLS certificates, tunnel and settings are kept; migrations run automatically and the services restart.
+4. To update the exit agent as well, run `agent/install.sh` from the same package (the server installer leaves an already-installed agent alone).
+5. Check: `curl -s https://<your-address>/v1/access` must answer **401** (route exists, login needed), not 404, and `curl -s http://127.0.0.1:18080/readyz` must succeed on the Mac mini.
+6. Phones: use a fresh QR code or the new Android app; the new app finds the server again after an address change.
 
 - **Just run `./install.sh`.** It asks only for the **database URL** and the dashboard **admin email and password**, then: installs the server, makes **this Mac the exit node** (phones use its internet, like the Windows setup), and gives it a free public `trycloudflare.com` URL that is kept current when it changes. Re-running it updates and offers to change the admin login (`--set-admin` goes straight there).
 - **Database:** use the **direct (unpooled)** connection string; the installer refuses a `-pooler` one. To skip the question, put `AM_DATABASE_URL=<url>` in a file named `agentmesh-db.env` next to `install.sh`. Never commit or publish that file; it is git-ignored.
@@ -37,10 +48,10 @@ tar -xzf agentmesh-server_0.6.4_macos_arm64.tar.gz && cd agentmesh-server
 - **Public URL (free, changing):** `./install.sh --quick-tunnel --rendezvous-token <github-token>` uses a free `trycloudflare.com` address. It changes whenever the tunnel restarts, so the `com.agentmesh.publicurl` service keeps the server pointed at the live address and publishes it to the rendezvous gist that the Android app (6-digit codes, older QR codes) and the Vercel dashboard look up. The token needs only the **gist** scope; without it, phones must re-scan after every address change.
 - **Use the Mac as an exit node too:** add `--agent-token am_enr_...` (from **Enrollment → New token**).
 - **Telegram:** add `--telegram-token <bot-token> --telegram-chat <chat-id> --dashboard-url https://<your-dashboard>` to get a message with the new address whenever it changes. On Windows, set `AM_TELEGRAM_BOT_TOKEN`, `AM_TELEGRAM_CHAT_ID` and `AM_DASHBOARD_URL` in `infrastructure/docker/.env`; the watchdog task (`scripts/install-autostart.ps1`) sends it.
-- **Update:** run the new package's `install.sh`; settings, keys and certificates in `/usr/local/agentmesh/etc` are kept. **Remove:** `./install.sh --uninstall` (add `--purge` to delete settings too).
-- **Logs** are in `/usr/local/agentmesh/log/`. Restart a service with `sudo launchctl kickstart -k system/com.agentmesh.control-api`.
+- **Update:** run the new package's `install.sh`; settings, keys and certificates in `<prefix>/etc` are kept; pass the same `--prefix` as the first install. **Remove:** `./install.sh --uninstall` (add `--purge` to delete settings too).
+- **Logs** are in `<prefix>/log/`. Restart a service with `sudo launchctl kickstart -k system/com.agentmesh.control-api`.
 - **Dashboard on Vercel:** set the Mac's public URL in [dashboard/vercel.json](dashboard/vercel.json); Vercel forwards `/v1/*` to it, so login cookies keep working.
-- **Build the packages:** `scripts/build-macos-server.sh v0.6.3` (needs Go, Node and curl). The Docker-based alternative is `scripts/install/macos-server.sh`.
+- **Build the packages:** `scripts/build-macos-server.sh v0.7.0` (needs Go, Node and curl). The Docker-based alternative is `scripts/install/macos-server.sh`.
 
 ## 📱 Use a computer's internet on your phone (the 1-minute version)
 
