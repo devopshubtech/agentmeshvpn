@@ -3,7 +3,7 @@
 #   1. gomobile-binds the exit-node engine (mobile/tunnel) into an AAR
 #   2. creates a local release signing key on first run (kept out of git)
 #   3. assembles two signed release APKs: dist/agentmesh-control.apk (normal app)
-#      and dist/agentmesh-admin.apk (owner's admin app)
+#      and dist/agentmesh-admin.apk (owner admin app, kept private: not on the public release)
 set -eu
 cd /src
 APP=mobile/android-control

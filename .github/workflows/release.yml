@@ -58,18 +58,31 @@ jobs:
         if: env.HAS_KEY == 'true'
         with:
           name: apk
-          path: |
-            dist/agentmesh-control.apk
-            dist/agentmesh-admin.apk
+          path: dist/agentmesh-control.apk
+      # The owner's admin app is NOT published on the public release. It is kept as a
+      # private workflow artifact (only people with access to this repository can
+      # download it: Actions -> this run -> Artifacts -> admin-apk).
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          name: admin-apk
+          path: dist/agentmesh-admin.apk
+          retention-days: 30
 
   publish:
     runs-on: ubuntu-latest
     needs: [agents, apk]
     steps:
+      # Only the public packages; the private admin-apk artifact is never downloaded here.
       - uses: actions/download-artifact@v4
         with:
+          name: agents
           path: out
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # the APK job is skipped without signing secrets
+        with:
+          name: apk
+          path: out
       - name: checksums
         run: cd out && sha256sum -- * | grep -v SHA256SUMS > SHA256SUMS
       - uses: softprops/action-gh-release@v2
