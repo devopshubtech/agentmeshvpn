@@ -38,7 +38,8 @@ Phones on the 0.7 apps need server 0.7: older servers answer `route not found` /
 1. Copy the new package to the Mac mini and unpack it **inside the install folder** (example folder: `/usr/local/.app/.svc/.agent`):
    ```bash
    cd /usr/local/.app/.svc/.agent
-   sudo tar -xzf ~/Downloads/agentmesh-server_0.7.0_macos_arm64.tar.gz     # creates agentmesh-server/
+   sudo curl -fLO https://github.com/devopshubtech/AgentMesh/releases/download/v0.7.0/agentmesh-server_0.7.0_macos_arm64.tar.gz
+   sudo tar -xzf agentmesh-server_0.7.0_macos_arm64.tar.gz     # creates agentmesh-server/
    cd agentmesh-server
    ```
 2. Run the installer with **the same folder the server is installed in now**:
@@ -47,9 +48,10 @@ Phones on the 0.7 apps need server 0.7: older servers answer `route not found` /
    ```
    There is no default folder, so it is always your choice; without `--prefix` it asks.
 3. Answer **N** to "Change the dashboard admin login?". The database URL, keys, TLS certificates, tunnel and settings are kept; migrations run automatically and the services restart.
-4. To update the exit agent as well, run `agent/install.sh` from the same package (the server installer leaves an already-installed agent alone).
-5. Check: `curl -s https://<your-address>/v1/access` must answer **401** (route exists, login needed), not 404, and `curl -s http://127.0.0.1:18080/readyz` must succeed on the Mac mini.
-6. Phones: use a fresh QR code or the new Android app; the new app finds the server again after an address change.
+4. An older single exit agent from the previous install (if any) keeps running as one extra node; it is harmless. Remove it with `sudo agentmesh-agent uninstall` if you don't want it.
+5. The installer also creates **4 exit nodes** (`<name>-exit-1` to `-4`) if they are missing, so the Servers tab in the admin app should show "Exit nodes: 4 of 4 online" within a minute.
+6. Check: `curl -s https://<your-address>/v1/access` must answer **401** (route exists, login needed), not 404, and `curl -s http://127.0.0.1:18080/readyz` must succeed on the Mac mini.
+7. Phones: use a fresh QR code or the new Android app; the new app finds the server again after an address change.
 
 Layout under the install folder (example `/usr/local/.app/.svc/.agent/`):
 

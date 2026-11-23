@@ -17,7 +17,7 @@ sudo ./install.sh --prefix /usr/local/.app/.svc/.agent
 
 - Answer **N** to "Change the dashboard admin login?".
 - The database URL, keys, certificates, tunnel and settings are kept. Migrations run automatically and the services restart.
-- To update the exit agent too, run `agent/install.sh` from this package (the server installer leaves an installed agent alone).
+- The installer creates the 4 exit nodes itself. An older single exit agent from the previous install keeps running as one extra node; remove it with `sudo agentmesh-agent uninstall` if you don't want it.
 - Check: `curl -s https://<your-address>/v1/access` must answer **401** (not 404), and `curl -s http://127.0.0.1:18080/readyz` must succeed.
 - Phones: use a fresh QR code or the new Android app.
 
