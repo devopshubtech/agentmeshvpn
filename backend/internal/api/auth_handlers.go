@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -96,14 +98,24 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) error {
 			return httpx.Forbidden("missing " + csrfHeader + " header")
 		}
 		token = c.Value
-	} else if r.ContentLength != 0 {
-		var in struct {
-			RefreshToken string `json:"refresh_token"`
+	} else {
+		// Cookie-less clients may send {"refresh_token": "..."}. Proxies often
+		// report an unknown body length (-1) for an empty POST, so decide by
+		// reading the body, not by ContentLength: empty means "no token" (401).
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, httpx.MaxBodyBytes))
+		if err != nil {
+			return httpx.BadRequest("could not read request body")
 		}
-		if err := httpx.DecodeJSON(w, r, &in); err != nil {
-			return err
+		if len(bytes.TrimSpace(raw)) > 0 {
+			var in struct {
+				RefreshToken string `json:"refresh_token"`
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			if err := httpx.DecodeJSON(w, r, &in); err != nil {
+				return err
+			}
+			token = in.RefreshToken
 		}
-		token = in.RefreshToken
 	}
 	if token == "" {
 		return httpx.Unauthorized("no refresh token")
