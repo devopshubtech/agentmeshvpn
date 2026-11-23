@@ -5,6 +5,8 @@
 #   ./install.sh                                   install or update (asks only for the database
 #                                                  URL and the admin login; this Mac becomes the exit
 #                                                  node and gets a free public URL automatically)
+#   ./install.sh --prefix /full/path               install folder (no default; asked if left out).
+#                                                  Use the same folder again to upgrade that install.
 #   ./install.sh --public-url https://api.example.com
 #   ./install.sh --tunnel-token <token>            permanent public URL (named Cloudflare tunnel)
 #   ./install.sh --no-tunnel                       no public URL (LAN only); default is a free
@@ -26,7 +28,7 @@
 # Services run as launchd daemons under your user account and start at boot.
 set -euo pipefail
 
-PREFIX=${AM_PREFIX:-/usr/local/agentmesh}
+PREFIX=${AM_PREFIX:-} # no default: you choose the install folder (--prefix, AM_PREFIX or the prompt)
 LAUNCHD_DIR=${AM_LAUNCHD_DIR:-/Library/LaunchDaemons}
 SERVICES="nats control-api agent-gateway worker web tunnel publicurl"
 # Rendezvous gist built into the Android app (mobile/android-control/gradle.properties).
@@ -39,6 +41,7 @@ PUBLIC_URL="" TUNNEL_TOKEN="" QUICK_TUNNEL="" AGENT_TOKEN="" DATABASE_URL="" UNI
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
+    --prefix)       PREFIX=${2:?--prefix needs a folder}; shift 2 ;;
     --public-url)   PUBLIC_URL=${2:?--public-url needs a value}; shift 2 ;;
     --tunnel-token) TUNNEL_TOKEN=${2:?--tunnel-token needs a value}; shift 2 ;;
     --quick-tunnel) QUICK_TUNNEL=1; shift ;; # the default; kept for older instructions
@@ -54,10 +57,16 @@ while [ $# -gt 0 ]; do
     --uninstall)    UNINSTALL=1; shift ;;
     --purge)        PURGE=1; shift ;;
     --set-admin)    SET_ADMIN=1; shift ;;
-    -h|--help)      sed -n '3,27p' "$0"; exit 0 ;;
+    -h|--help)      sed -n '3,29p' "$0"; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
+if [ -z "$PREFIX" ]; then
+  [ -t 0 ] || die "choose the install folder: --prefix /full/path (use the same folder again to upgrade that install)"
+  read -r -p "Install folder (full path; use the same one again to upgrade): " PREFIX
+  ARGS+=(--prefix "$PREFIX") # kept when the script re-runs itself under sudo
+fi
+case "$PREFIX" in /*) ;; *) die "the install folder must be a full path starting with /" ;; esac
 case "$PUBLIC_URL" in ""|https://*) ;; *) die "--public-url must start with https://" ;; esac
 
 # Needs root for /usr/local and /Library/LaunchDaemons; services run as the invoking user.
@@ -275,7 +284,7 @@ $who
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string><string>-c</string>
-    <string>$(printf 'P=%s; HOME="$P/var"; export HOME; set -a; . "$P/etc/agentmesh.env"; set +a; %s' "$PREFIX" "$2" | xml)</string>
+    <string>$(printf 'P=%s; AM_PREFIX="$P"; HOME="$P/var"; export HOME AM_PREFIX; set -a; . "$P/etc/agentmesh.env"; set +a; %s' "$PREFIX" "$2" | xml)</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

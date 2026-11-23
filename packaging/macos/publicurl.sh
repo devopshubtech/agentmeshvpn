@@ -8,7 +8,7 @@
 #   - sends the new address to Telegram (optional);
 #   - restarts the tunnel when Cloudflare has dropped it.
 # Runs as root under launchd (com.agentmesh.publicurl); installed by install.sh.
-P=${AM_PREFIX:-/usr/local/agentmesh}
+P=${AM_PREFIX:?AM_PREFIX is not set (the installer sets it)}
 ENVF="$P/etc/agentmesh.env" TLOG="$P/log/tunnel.log" STATE="$P/var/rendezvous-published" TGSTATE="$P/var/telegram-notified"
 
 get_env() { grep "^$1=" "$ENVF" 2>/dev/null | tail -n1 | cut -d= -f2- | sed -e "s/^'//" -e "s/'\$//"; }
