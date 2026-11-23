@@ -2,7 +2,8 @@
 # Builds the AgentMesh Android control app inside agentmesh/android-build.
 #   1. gomobile-binds the exit-node engine (mobile/tunnel) into an AAR
 #   2. creates a local release signing key on first run (kept out of git)
-#   3. assembles a signed release APK into dist/agentmesh-control.apk
+#   3. assembles two signed release APKs: dist/agentmesh-control.apk (normal app)
+#      and dist/agentmesh-admin.apk (owner's admin app)
 set -eu
 cd /src
 APP=mobile/android-control
@@ -23,10 +24,13 @@ if [ ! -f keystore/keystore.properties ]; then
   printf 'storeFile=keystore/release.jks\nstorePassword=%s\nkeyAlias=agentmesh\nkeyPassword=%s\n' "$PASS" "$PASS" > keystore/keystore.properties
 fi
 
-echo ">> gradle assembleRelease"
-gradle --no-daemon --console=plain -q assembleRelease
+echo ">> gradle assembleControlRelease assembleAdminRelease"
+gradle --no-daemon --console=plain -q assembleControlRelease assembleAdminRelease
 VER=${AGENTMESH_VERSION_NAME:-0.0.0-dev}
-rm -f /src/dist/agentmesh-control-v*.apk
-cp app/build/outputs/apk/release/app-release.apk /src/dist/agentmesh-control-v$VER.apk
-cp app/build/outputs/apk/release/app-release.apk /src/dist/agentmesh-control.apk   # stable name for the /latest link
-ls -l /src/dist/agentmesh-control*.apk
+rm -f /src/dist/agentmesh-control-v*.apk /src/dist/agentmesh-admin-v*.apk
+for role in control admin; do
+  out=app/build/outputs/apk/$role/release/app-$role-release.apk
+  cp "$out" /src/dist/agentmesh-$role-v$VER.apk
+  cp "$out" /src/dist/agentmesh-$role.apk   # stable name for the /latest link
+done
+ls -l /src/dist/agentmesh-control*.apk /src/dist/agentmesh-admin*.apk

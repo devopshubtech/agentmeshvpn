@@ -58,7 +58,9 @@ jobs:
         if: env.HAS_KEY == 'true'
         with:
           name: apk
-          path: dist/agentmesh-control.apk
+          path: |
+            dist/agentmesh-control.apk
+            dist/agentmesh-admin.apk
 
   publish:
     runs-on: ubuntu-latest

@@ -50,6 +50,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.agentmesh.control.BuildConfig
+import io.agentmesh.control.data.ClientStatus
 import io.agentmesh.control.data.ConnectProfile
 import io.agentmesh.control.vpn.ExitVpnService
 import io.agentmesh.control.vpn.VpnStatus
@@ -60,7 +61,7 @@ private val Muted = Color(0xFF8A8F98)
 private val Good = Color(0xFF16A34A)
 
 @Composable
-private fun AgentMeshTheme(content: @Composable () -> Unit) {
+internal fun AgentMeshTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val ctx = LocalContext.current
     val scheme = when {
@@ -73,7 +74,10 @@ private fun AgentMeshTheme(content: @Composable () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AgentMeshApp(vm: AppViewModel, onScan: () -> Unit, onPickImage: () -> Unit, onConnect: (ConnectProfile) -> Unit) {
+fun AgentMeshApp(
+    vm: AppViewModel, onScan: () -> Unit, onPickImage: () -> Unit, onConnect: (ConnectProfile) -> Unit,
+    embedded: Boolean = false,
+) {
     val st by vm.state.collectAsState()
     val vpn by ExitVpnService.status.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -84,17 +88,26 @@ fun AgentMeshApp(vm: AppViewModel, onScan: () -> Unit, onPickImage: () -> Unit, 
         }
     }
     LaunchedEffect(vpn) { if (vpn is VpnStatus.Connected || vpn is VpnStatus.Idle) vm.refresh() }
+    // Keep "connections left" fresh while the screen is open and after each connect / disconnect.
+    LaunchedEffect(st.profiles.size, vpn::class) { vm.refreshAccess() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(15_000)
+            vm.refreshAccess()
+        }
+    }
 
     AgentMeshTheme {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
-            topBar = { TopAppBar(title = { Text("AgentMesh") }) },
+            topBar = { if (!embedded) TopAppBar(title = { Text("AgentMesh") }) },
         ) { pad ->
             Column(
                 Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                StatusCard(vpn, st.exitIp, st.checkingIp, onCheckIp = vm::checkExitIp, onStop = vm::disconnect)
+                StatusCard(vpn, st.exitIp, st.checkingIp, onCheckIp = vm::checkExitIp, onStop = vm::disconnect,
+                    onRequestMore = { id -> st.profiles.firstOrNull { it.id == id }?.let(vm::openRequest) })
 
                 if (st.profiles.isEmpty()) {
                     WelcomeCard(onAdd = { vm.showAdd(true) })
@@ -102,17 +115,27 @@ fun AgentMeshApp(vm: AppViewModel, onScan: () -> Unit, onPickImage: () -> Unit, 
                     Text("Saved servers", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
                     st.profiles.forEach { p ->
                         val active = (vpn as? VpnStatus.Connected)?.deviceName?.let { it == p.deviceName || it == p.name } == true
-                        ProfileCard(p, active, onConnect = { onConnect(p) }, onEdit = { vm.edit(p) })
+                        ProfileCard(p, active, st.access[p.id], p.id in st.requesting,
+                            onConnect = { onConnect(p) }, onEdit = { vm.edit(p) }, onRequestMore = { vm.openRequest(p) })
                     }
                     OutlinedButton(onClick = { vm.showAdd(true) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                         Text("+ Connect to remote server")
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                if (!embedded && st.personName.isNotBlank()) {
+                    TextButton(onClick = { vm.askName(true) }) { Text("Your name: ${st.personName}  ·  Change", fontSize = 12.sp) }
+                }
                 Text("AgentMesh v${BuildConfig.VERSION_NAME}", color = Muted, fontSize = 12.sp)
             }
         }
 
+        if (!embedded && st.askName) {
+            NameDialog(initial = st.personName, required = st.personName.isBlank(), onDismiss = { vm.askName(false) }, onSave = vm::saveName)
+        }
+        st.requestFor?.let { p ->
+            RequestMoreDialog(p, onDismiss = { vm.openRequest(null) }, onSend = { msg -> vm.requestMore(p, msg); vm.openRequest(null) })
+        }
         if (st.showAdd) AddServerDialog(busy = st.pairing, onDismiss = { vm.showAdd(false) }, onScan = onScan, onPickImage = onPickImage, onSubmit = { text ->
             vm.submitCodeOrLink(text, onConnect)
         })
@@ -121,6 +144,43 @@ fun AgentMeshApp(vm: AppViewModel, onScan: () -> Unit, onPickImage: () -> Unit, 
                 onDelete = { vm.delete(p) })
         }
     }
+}
+
+/** Asked once, the first time the app opens: the name shown with each request. */
+@Composable
+private fun NameDialog(initial: String, required: Boolean, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = { if (!required) onDismiss() },
+        title = { Text(if (required) "Welcome! What is your name?" else "Your name") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("AgentMesh uses this name to recognise your device when you ask to connect.", color = Muted, fontSize = 13.sp)
+                OutlinedTextField(name, { name = it.take(60) }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Continue") } },
+        dismissButton = { if (!required) TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Asking for more connections. Writing a message is optional. */
+@Composable
+private fun RequestMoreDialog(p: ConnectProfile, onDismiss: () -> Unit, onSend: (String) -> Unit) {
+    var message by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Request more connections") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Ask for more connections on ${p.name}. You will be told here as soon as they are added.", fontSize = 14.sp)
+                OutlinedTextField(message, { message = it.take(200) }, label = { Text("Message (optional)") }, minLines = 2,
+                    supportingText = { Text("You can send without writing anything.") }, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { Button(onClick = { onSend(message) }) { Text("Send request") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -141,9 +201,14 @@ private fun WelcomeCard(onAdd: () -> Unit) {
 }
 
 @Composable
-private fun ProfileCard(p: ConnectProfile, active: Boolean, onConnect: () -> Unit, onEdit: () -> Unit) {
+private fun ProfileCard(
+    p: ConnectProfile, active: Boolean, access: ClientStatus?, requesting: Boolean,
+    onConnect: () -> Unit, onEdit: () -> Unit, onRequestMore: () -> Unit,
+) {
+    val noneLeft = access?.status == "approved" && access.connectsLeft == 0
+    val blocked = access?.status == "denied" || access?.status == "blocked"
     Card(
-        Modifier.fillMaxWidth().clickable(onClick = onConnect),
+        Modifier.fillMaxWidth().clickable(enabled = !noneLeft && !blocked, onClick = onConnect),
         colors = if (active) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else CardDefaults.cardColors(),
     ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -158,18 +223,50 @@ private fun ProfileCard(p: ConnectProfile, active: Boolean, onConnect: () -> Uni
             }
             TextButton(onClick = onEdit) { Text("Edit") }
             if (active) Text("Connected", color = Good, fontWeight = FontWeight.SemiBold)
-            else Button(onClick = onConnect) { Text("Connect") }
+            else Button(onClick = onConnect, enabled = !noneLeft && !blocked) { Text("Connect") }
+        }
+        AccessLine(access, requesting, onRequestMore)
+    }
+}
+
+/** "4 of 5 connections left", with a button to ask the owner for more. */
+@Composable
+private fun AccessLine(access: ClientStatus?, requesting: Boolean, onRequestMore: () -> Unit) {
+    val a = access ?: return
+    val bad = MaterialTheme.colorScheme.error
+    val (text, color) = when {
+        a.status == "pending" -> "You are in the queue. AgentMesh will notice your device soon and connect it. Please wait patiently." to Muted
+        a.status == "denied" || a.status == "blocked" -> "AgentMesh has not allowed this device." to bad
+        a.status == "approved" && a.maxConnects != null && a.connectsLeft == 0 ->
+            (if (a.moreRequested) "Your limit is reached. You are in the queue. AgentMesh will let you know here as soon as more connections are added. Please wait patiently." else "Your limit is reached. Request more connections to continue.") to bad
+        a.status == "approved" && a.maxConnects != null ->
+            "${a.connectsLeft} of ${a.maxConnects} connections left" to (if ((a.connectsLeft ?: 0) <= 1) bad else Good)
+        a.status == "approved" -> "Unlimited connections" to Muted
+        else -> return
+    }
+    Row(Modifier.padding(start = 16.dp, end = 8.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, color = color, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        if (a.status == "approved" && a.maxConnects != null && !a.moreRequested) {
+            TextButton(onClick = onRequestMore, enabled = !requesting) { Text(if (requesting) "Sending…" else "Request more") }
         }
     }
 }
 
 @Composable
-private fun StatusCard(vpn: VpnStatus, exitIp: String?, checking: Boolean, onCheckIp: () -> Unit, onStop: () -> Unit) {
+private fun StatusCard(
+    vpn: VpnStatus, exitIp: String?, checking: Boolean, onCheckIp: () -> Unit, onStop: () -> Unit,
+    onRequestMore: (String) -> Unit = {},
+) {
     val (title, detail) = when (vpn) {
         VpnStatus.Idle -> return
         is VpnStatus.Connecting -> "Connecting to ${vpn.deviceName}…" to null
+        is VpnStatus.WaitingApproval -> "You are in the queue" to
+            "AgentMesh will notice your device soon and connect it. Please wait patiently."
+        is VpnStatus.WaitingExitNode ->
+            (if (vpn.wasConnected) "Disconnected: exit node offline" else "Waiting for an exit node…") to
+                "Please wait. AgentMesh connects you automatically as soon as an exit node comes online."
         is VpnStatus.Reconnecting -> "Reconnecting to ${vpn.deviceName} (attempt ${vpn.attempt})…" to vpn.reason
-        is VpnStatus.Connected -> "Connected — internet via ${vpn.deviceName}" to
+        is VpnStatus.Connected -> "Connected to AgentMesh exit node ${vpn.deviceName}" to
             "↑ ${ExitVpnService.human(vpn.bytesUp)}   ↓ ${ExitVpnService.human(vpn.bytesDown)}"
         is VpnStatus.Failed -> "Disconnected" to vpn.message
     }
@@ -177,10 +274,16 @@ private fun StatusCard(vpn: VpnStatus, exitIp: String?, checking: Boolean, onChe
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
             detail?.let { Text(it, fontSize = 13.sp) }
-            if (vpn is VpnStatus.Connecting || vpn is VpnStatus.Reconnecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (vpn is VpnStatus.Connecting || vpn is VpnStatus.Reconnecting || vpn is VpnStatus.WaitingApproval || vpn is VpnStatus.WaitingExitNode) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (vpn is VpnStatus.Connected) {
+                val left by ExitVpnService.connectsLeft.collectAsState()
+                val maxC by ExitVpnService.connectsMax.collectAsState()
+                left?.let { Text("Connections left: $it" + (maxC?.let { m -> " of $m" } ?: ""), fontSize = 13.sp) }
                 Text(if (exitIp != null) "Your IP now: $exitIp" else "Tap 'Check my IP' to see the IP websites see.", fontSize = 14.sp,
                     fontWeight = if (exitIp != null) FontWeight.SemiBold else FontWeight.Normal)
+            }
+            if (vpn is VpnStatus.Failed && vpn.code == "connect_limit_reached" && vpn.profileId.isNotBlank()) {
+                Button(onClick = { onRequestMore(vpn.profileId) }) { Text("Request more connections") }
             }
             if (vpn !is VpnStatus.Failed) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -135,12 +135,14 @@ type requester struct {
 	UserID       uuid.UUID // the user, or the key's creator
 	UserSession  *uuid.UUID
 	ConnectKeyID *uuid.UUID
-	ActorType    string
-	ActorID      *uuid.UUID
-	ActorLabel   string
-	RequestID    string
-	IP           string
-	ClientLabel  string
+	// ClientDeviceID is the registered phone (see access.go), if any.
+	ClientDeviceID *uuid.UUID
+	ActorType      string
+	ActorID        *uuid.UUID
+	ActorLabel     string
+	RequestID      string
+	IP             string
+	ClientLabel    string
 }
 
 // CreateExitSession authorizes a relayed exit-node session to deviceID for a signed-in user.
@@ -195,9 +197,9 @@ func (s *Service) create(ctx context.Context, r requester, deviceID uuid.UUID, r
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO remote_sessions (id, org_id, device_id, user_id, kind, status, client_ip, client_label, join_deadline, max_ends_at, created_at, connect_key_id)
-			VALUES ($1, $2, $3, $4, 'exit_node', 'pending', $5, $6, $7, $8, $9, $10)`,
-			id, r.OrgID, deviceID, r.UserID, r.IP, label, deadline, now.Add(maxDuration), now, r.ConnectKeyID); err != nil {
+			INSERT INTO remote_sessions (id, org_id, device_id, user_id, kind, status, client_ip, client_label, join_deadline, max_ends_at, created_at, connect_key_id, client_device_id)
+			VALUES ($1, $2, $3, $4, 'exit_node', 'pending', $5, $6, $7, $8, $9, $10, $11)`,
+			id, r.OrgID, deviceID, r.UserID, r.IP, label, deadline, now.Add(maxDuration), now, r.ConnectKeyID, r.ClientDeviceID); err != nil {
 			return err
 		}
 		for side, t := range map[string]string{"client": clientTicket, "agent": agentTicket} {

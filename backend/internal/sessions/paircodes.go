@@ -64,7 +64,7 @@ func newPairCode() (string, error) {
 }
 
 // CreatePairCode issues a code for deviceID valid for ttl (0 = default).
-func (s *Service) CreatePairCode(ctx context.Context, a devices.Actor, deviceID uuid.UUID, label string, ttl time.Duration) (*PairCode, error) {
+func (s *Service) CreatePairCode(ctx context.Context, a devices.Actor, deviceID uuid.UUID, label string, ttl time.Duration, rule Rule) (*PairCode, error) {
 	label = textutil.Clean(label, 100)
 	if label == "" {
 		label = "Pairing code"
@@ -74,6 +74,9 @@ func (s *Service) CreatePairCode(ctx context.Context, a devices.Actor, deviceID 
 	}
 	if ttl < time.Minute || ttl > maxPairCodeTTL {
 		return nil, httpx.Validation{"expires_in_s": "must be between 60 and 86400 seconds"}.Err()
+	}
+	if err := rule.validate(); err != nil {
+		return nil, err
 	}
 	var out *PairCode
 	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
@@ -104,9 +107,10 @@ func (s *Service) CreatePairCode(ctx context.Context, a devices.Actor, deviceID 
 		}
 		pc := &PairCode{ID: uuid.Must(uuid.NewV7()), DeviceID: deviceID, Label: label, Code: code}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO pair_codes (id, org_id, device_id, code_hash, label, created_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval) RETURNING created_at, expires_at`,
-			pc.ID, a.P.OrgID, deviceID, HashTicket(code), label, a.P.UserID, fmt.Sprintf("%d seconds", int(ttl.Seconds()))).
+			INSERT INTO pair_codes (id, org_id, device_id, code_hash, label, created_by, expires_at, require_approval, default_max_connects, pool)
+			VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval, $8, $9, $10) RETURNING created_at, expires_at`,
+			pc.ID, a.P.OrgID, deviceID, HashTicket(code), label, a.P.UserID, fmt.Sprintf("%d seconds", int(ttl.Seconds())),
+			rule.approval(), rule.MaxConnects, rule.pool()).
 			Scan(&pc.CreatedAt, &pc.ExpiresAt); err != nil {
 			return err
 		}
@@ -181,13 +185,15 @@ func (s *Service) RedeemPairCode(ctx context.Context, code, clientLabel, ip, req
 		var (
 			pcID, orgID, deviceID, creator uuid.UUID
 			label, creatorStatus           string
+			requireApproval, pool          bool
+			maxConnects                    *int
 		)
 		err := tx.QueryRow(ctx, `
-			SELECT p.id, p.org_id, p.device_id, p.created_by, p.label, u.status
+			SELECT p.id, p.org_id, p.device_id, p.created_by, p.label, u.status, p.require_approval, p.default_max_connects, p.pool
 			FROM pair_codes p JOIN users u ON u.id = p.created_by
 			WHERE p.code_hash = $1 AND p.revoked_at IS NULL AND p.expires_at > now()
 			ORDER BY p.id DESC LIMIT 1 FOR UPDATE OF p`, HashTicket(code)).
-			Scan(&pcID, &orgID, &deviceID, &creator, &label, &creatorStatus)
+			Scan(&pcID, &orgID, &deviceID, &creator, &label, &creatorStatus, &requireApproval, &maxConnects, &pool)
 		if db.IsNoRows(err) || (err == nil && creatorStatus != "active") {
 			return ErrInvalidPairCode
 		}
@@ -211,8 +217,9 @@ func (s *Service) RedeemPairCode(ctx context.Context, code, clientLabel, ip, req
 		}
 		keyID := uuid.Must(uuid.NewV7())
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO connect_keys (id, org_id, device_id, key_hash, label, created_by, pair_code_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, keyID, orgID, deviceID, HashTicket(secret), keyLabel, creator, pcID); err != nil {
+			INSERT INTO connect_keys (id, org_id, device_id, key_hash, label, created_by, pair_code_id, require_approval, default_max_connects, pool)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, keyID, orgID, deviceID, HashTicket(secret), keyLabel, creator, pcID,
+			requireApproval, maxConnects, pool); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE pair_codes SET uses = uses + 1 WHERE id = $1`, pcID); err != nil {

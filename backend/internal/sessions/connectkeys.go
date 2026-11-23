@@ -74,13 +74,16 @@ func scanKey(row pgx.Row) (*ConnectKey, error) {
 }
 
 // CreateConnectKey issues a key for deviceID. expiresInS 0 means no expiry.
-func (s *Service) CreateConnectKey(ctx context.Context, a devices.Actor, deviceID uuid.UUID, label string, expiresInS int, publicURL, rendezvous string) (*CreatedKey, error) {
+func (s *Service) CreateConnectKey(ctx context.Context, a devices.Actor, deviceID uuid.UUID, label string, expiresInS int, rule Rule, publicURL, rendezvous string) (*CreatedKey, error) {
 	label = textutil.Clean(label, 100)
 	if label == "" {
 		label = "Phone link"
 	}
 	if expiresInS < 0 || expiresInS > 3650*86400 {
 		return nil, httpx.Validation{"expires_in_s": "must be between 0 (never) and 10 years"}.Err()
+	}
+	if err := rule.validate(); err != nil {
+		return nil, err
 	}
 	secret, err := newConnectSecret()
 	if err != nil {
@@ -102,8 +105,9 @@ func (s *Service) CreateConnectKey(ctx context.Context, a devices.Actor, deviceI
 			return httpx.InvalidState("device is revoked")
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO connect_keys (id, org_id, device_id, key_hash, label, created_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, a.P.OrgID, deviceID, HashTicket(secret), label, a.P.UserID, exp); err != nil {
+			INSERT INTO connect_keys (id, org_id, device_id, key_hash, label, created_by, expires_at, require_approval, default_max_connects, pool)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, id, a.P.OrgID, deviceID, HashTicket(secret), label, a.P.UserID, exp,
+			rule.approval(), rule.MaxConnects, rule.pool()); err != nil {
 			return err
 		}
 		if err := audit.Record(ctx, tx, audit.Event{
@@ -183,38 +187,4 @@ func (s *Service) RevokeConnectKey(ctx context.Context, a devices.Actor, id uuid
 		s.bus.PublishJSON(bus.RelayKillSubject(sid), map[string]string{"reason": "terminated"})
 	}
 	return nil
-}
-
-// OpenWithKey opens an exit-node session using a connect key (no login).
-func (s *Service) OpenWithKey(ctx context.Context, key, clientLabel, ip, requestID, relayURL string) (*Created, error) {
-	if !strings.HasPrefix(key, connectKeyPrefix) || len(key) > 128 {
-		return nil, ErrInvalidConnectKey
-	}
-	var (
-		id, orgID, deviceID, creator uuid.UUID
-		label, creatorStatus         string
-		expires, revoked             *time.Time
-	)
-	err := s.pool.QueryRow(ctx, `
-		SELECT k.id, k.org_id, k.device_id, k.created_by, k.label, k.expires_at, k.revoked_at, u.status
-		FROM connect_keys k JOIN users u ON u.id = k.created_by WHERE k.key_hash = $1`, HashTicket(key)).
-		Scan(&id, &orgID, &deviceID, &creator, &label, &expires, &revoked, &creatorStatus)
-	if db.IsNoRows(err) {
-		return nil, ErrInvalidConnectKey
-	}
-	if err != nil {
-		return nil, err
-	}
-	if revoked != nil || (expires != nil && time.Now().After(*expires)) || creatorStatus != "active" {
-		return nil, ErrInvalidConnectKey
-	}
-	c, err := s.create(ctx, requester{
-		OrgID: orgID, UserID: creator, ConnectKeyID: &id, ActorType: audit.ActorSystem,
-		ActorLabel: "connect-key:" + label, RequestID: requestID, IP: ip, ClientLabel: clientLabel,
-	}, deviceID, relayURL)
-	if err != nil {
-		return nil, err
-	}
-	_, _ = s.pool.Exec(ctx, `UPDATE connect_keys SET uses = uses + 1, last_used_at = now() WHERE id = $1`, id)
-	return c, nil
 }

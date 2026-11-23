@@ -93,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/connect/session", httpx.H(s.openConnectSession))
 		// Public: a short-lived 6-digit pairing code, exchanged for a connect key.
 		r.Post("/connect/pair", httpx.H(s.redeemPairCode))
+		// Public: how many connections a phone has left, and asking for more.
+		r.Post("/connect/status", httpx.H(s.connectStatus))
+		r.Post("/connect/request-more", httpx.H(s.requestMore))
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.authenticate)
@@ -118,6 +121,9 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/devices/{id}/pair-codes", httpx.H(s.listPairCodes))
 			r.Post("/devices/{id}/pair-codes", httpx.H(s.createPairCode))
 			r.Delete("/pair-codes/{id}", httpx.H(s.revokePairCode))
+			r.Get("/access", httpx.H(s.listAccess))
+			r.Post("/access/{id}/{op:approve|add|dismiss|deny|block}", httpx.H(s.decideAccess))
+			r.Delete("/access/{id}", httpx.H(s.deleteAccess))
 
 			r.Get("/commands/{id}", httpx.H(s.getCommand))
 			r.Post("/commands/{id}/cancel", httpx.H(s.cancelCommand))

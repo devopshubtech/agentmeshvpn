@@ -110,12 +110,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Asks the server for a session with the saved connect key. Returns nil
     /// (and records why) when the saved server is gone; throws otherwise.
-    private func openSession() async throws -> SessionGrant? {
+    private func openSession(reconnect: Bool = false) async throws -> SessionGrant? {
         guard let profile = store.get(profileID) else {
             store.lastError = "The saved server was deleted"
             return nil
         }
-        let grant = try await api.open(profile)
+        let grant = try await api.open(profile, reconnect: reconnect)
         if !grant.deviceName.isEmpty { deviceName = grant.deviceName }
         if var p = store.get(profileID) {
             p.deviceName = deviceName
@@ -192,7 +192,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             attempt += 1
             setStatus { $0.state = .reconnecting; $0.attempt = attempt; $0.reason = why }
             do {
-                guard let grant = try await openSession() else {
+                guard let grant = try await openSession(reconnect: true) else {
                     give(up: store.lastError ?? "Stopped")
                     return false
                 }

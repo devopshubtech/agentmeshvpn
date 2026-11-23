@@ -17,7 +17,26 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /** A granted exit-node session, ready for the tunnel engine. */
-data class SessionGrant(val relayUrl: String, val ticket: String, val sessionId: String, val deviceName: String, val serverUrl: String)
+data class SessionGrant(
+    val relayUrl: String, val ticket: String, val sessionId: String, val deviceName: String, val serverUrl: String,
+    /** Connections this phone may still start (null = unlimited). */
+    val connectsLeft: Int? = null,
+    /** The phone's whole allowance (null = unlimited). */
+    val connectsMax: Int? = null,
+)
+
+/** Where this phone stands with the owner of the server. */
+data class ClientStatus(
+    /** new, pending, approved, denied or blocked. */
+    val status: String,
+    val deviceName: String,
+    val maxConnects: Int?,
+    val connectsLeft: Int?,
+    val moreRequested: Boolean,
+)
+
+/** The server is waiting for its owner to approve this phone. */
+class ApprovalPending(val deviceName: String) : Exception("Waiting for the owner to approve this phone")
 
 /**
  * Opens sessions with a connect key (no login). If the saved address stops
@@ -31,15 +50,22 @@ class ConnectApi(private val store: ProfileStore) {
         .build()
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun open(p: ConnectProfile, clientLabel: String): SessionGrant = withContext(Dispatchers.IO) {
+    /**
+     * [reconnect] is true when re-opening a connection the phone already had
+     * (network change, another exit node); those do not use up the allowance
+     * the owner set. Throws [ApprovalPending] while the owner has not yet
+     * approved this phone.
+     */
+    suspend fun open(p: ConnectProfile, clientLabel: String, reconnect: Boolean = false): SessionGrant = withContext(Dispatchers.IO) {
         try {
-            openAt(p.serverUrl, p, clientLabel)
+            openAt(p.serverUrl, p, clientLabel, reconnect)
         } catch (e: Exception) {
             // A clear answer from the server (e.g. link revoked) is final.
             if (e is ApiException && e.status in 400..499) throw e
+            if (e is ApprovalPending) throw e
             val fresh = p.rendezvousUrl.takeIf { it.isNotBlank() }?.let { runCatching { resolve(it) }.getOrNull() }
             if (fresh == null || fresh == p.serverUrl) throw e
-            val g = openAt(fresh, p, clientLabel)
+            val g = openAt(fresh, p, clientLabel, reconnect)
             store.upsert(p.copy(serverUrl = fresh))
             g
         }
@@ -89,8 +115,13 @@ class ConnectApi(private val store: ProfileStore) {
         }
     }
 
-    private fun openAt(server: String, p: ConnectProfile, clientLabel: String): SessionGrant {
-        val body = buildJsonObject { put("client_label", clientLabel) }.toString()
+    private fun openAt(server: String, p: ConnectProfile, clientLabel: String, reconnect: Boolean): SessionGrant {
+        val body = buildJsonObject {
+            put("client_label", clientLabel)
+            put("client_id", store.clientId())
+            put("client_name", store.personName())
+            put("reconnect", reconnect)
+        }.toString()
             .toRequestBody("application/json".toMediaType())
         val req = Request.Builder().url("$server/v1/connect/session").post(body)
             .header("X-AgentMesh-Connect-Key", store.key(p))
@@ -105,13 +136,64 @@ class ConnectApi(private val store: ProfileStore) {
                 throw ApiException(r.code, err?.get("code")?.jsonPrimitive?.content ?: "http_${r.code}", msg ?: "HTTP ${r.code}")
             }
             val o = json.parseToJsonElement(text).jsonObject
+            if (r.code == 202 || o["status"]?.jsonPrimitive?.content == "pending") {
+                throw ApprovalPending(o["device_name"]?.jsonPrimitive?.content.orEmpty())
+            }
             return SessionGrant(
                 relayUrl = "$server/v1/relay", // same address that just answered: works from any network
                 ticket = o["ticket"]!!.jsonPrimitive.content,
                 sessionId = o["session_id"]!!.jsonPrimitive.content,
                 deviceName = o["device_name"]?.jsonPrimitive?.content.orEmpty(),
                 serverUrl = server,
+                connectsLeft = o["connects_left"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonPrimitive?.content?.toIntOrNull(),
+                connectsMax = o["connects_max"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonPrimitive?.content?.toIntOrNull(),
             )
+        }
+    }
+
+    /** How many connections this phone has left, and whether the owner approved it. Does not use up a connection. */
+    suspend fun status(p: ConnectProfile): ClientStatus = parseStatus(keyed(p, "status", buildJsonObject { put("client_id", store.clientId()) }))
+
+    /** Asks the owner for more connections (the owner gets a notification). */
+    suspend fun requestMore(p: ConnectProfile, message: String = ""): ClientStatus =
+        parseStatus(keyed(p, "request-more", buildJsonObject { put("client_id", store.clientId()); put("client_name", store.personName()); put("message", message) }))
+
+    private fun parseStatus(o: JsonObject): ClientStatus {
+        fun int(k: String) = o[k]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonPrimitive?.content?.toIntOrNull()
+        return ClientStatus(
+            status = o["status"]?.jsonPrimitive?.content ?: "new",
+            deviceName = o["device_name"]?.jsonPrimitive?.content.orEmpty(),
+            maxConnects = int("max_connects"), connectsLeft = int("connects_left"),
+            moreRequested = o["more_requested"]?.jsonPrimitive?.content == "true",
+        )
+    }
+
+    /** A call authorised by the connect key, with the same "address changed" fallback as [open]. */
+    private suspend fun keyed(p: ConnectProfile, path: String, body: JsonObject): JsonObject = withContext(Dispatchers.IO) {
+        try {
+            keyedAt(p.serverUrl, p, path, body)
+        } catch (e: Exception) {
+            if (e is ApiException && e.status in 400..499) throw e
+            val fresh = p.rendezvousUrl.takeIf { it.isNotBlank() }?.let { runCatching { resolve(it) }.getOrNull() }
+            if (fresh == null || fresh == p.serverUrl) throw e
+            val o = keyedAt(fresh, p, path, body)
+            store.upsert(p.copy(serverUrl = fresh))
+            o
+        }
+    }
+
+    private fun keyedAt(server: String, p: ConnectProfile, path: String, body: JsonObject): JsonObject {
+        val req = Request.Builder().url("$server/v1/connect/$path").post(body.toString().toRequestBody("application/json".toMediaType()))
+            .header("X-AgentMesh-Connect-Key", store.key(p)).header("User-Agent", "AgentMesh-Android").build()
+        http.newCall(req).execute().use { r ->
+            val text = r.body?.string().orEmpty()
+            if (!r.isSuccessful) {
+                val err = runCatching { json.parseToJsonElement(text).jsonObject["error"]?.jsonObject }.getOrNull()
+                val msg = err?.get("message")?.jsonPrimitive?.content
+                if (msg == null && r.code >= 500) throw IOException("server unreachable (HTTP ${r.code})")
+                throw ApiException(r.code, err?.get("code")?.jsonPrimitive?.content ?: "http_${r.code}", msg ?: "HTTP ${r.code}")
+            }
+            return json.parseToJsonElement(text).jsonObject
         }
     }
 

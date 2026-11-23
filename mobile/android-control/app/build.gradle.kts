@@ -31,6 +31,17 @@ android {
         buildConfigField("String", "DEFAULT_RENDEZVOUS", "\"$rendezvous\"")
     }
 
+    // Two apps from one code base: "control" is the normal phone app, "admin"
+    // adds the owner's tools (approve phones, set limits, invite, alerts).
+    flavorDimensions += "role"
+    productFlavors {
+        create("control") { dimension = "role" }
+        create("admin") {
+            dimension = "role"
+            applicationIdSuffix = ".admin"
+        }
+    }
+
     signingConfigs {
         if (keystoreProps.getProperty("storeFile") != null) {
             create("release") {

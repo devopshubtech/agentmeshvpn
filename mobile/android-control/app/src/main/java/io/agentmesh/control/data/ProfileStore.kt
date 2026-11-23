@@ -42,6 +42,21 @@ class ProfileStore(context: Context) {
 
     fun key(p: ConnectProfile): String = decrypt(p.keyEnc)
 
+    /** The person's own name, asked once when the app is first opened; the owner sees it with each request. */
+    fun personName(): String = prefs.getString("person_name", "").orEmpty()
+
+    fun setPersonName(name: String) = prefs.edit().putString("person_name", name.trim().take(60)).apply()
+
+    /**
+     * A random id made once per install. The server uses it to recognise this
+     * phone, so the owner can approve it and limit how often it connects.
+     */
+    @Synchronized
+    fun clientId(): String {
+        prefs.getString("client_id", null)?.let { return it }
+        return UUID.randomUUID().toString().also { prefs.edit().putString("client_id", it).apply() }
+    }
+
     /** Adds a link, or refreshes the saved server that already uses the same key. */
     fun import(link: ConnectLink, name: String? = null): ConnectProfile {
         val hash = sha256(link.key)
@@ -77,13 +92,13 @@ class ProfileStore(context: Context) {
         return gen.generateKey()
     }
 
-    private fun encrypt(plain: String): String {
+    fun encrypt(plain: String): String {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.ENCRYPT_MODE, secretKey())
         return Base64.encodeToString(c.iv + c.doFinal(plain.toByteArray()), Base64.NO_WRAP)
     }
 
-    private fun decrypt(enc: String): String {
+    fun decrypt(enc: String): String {
         val raw = Base64.decode(enc, Base64.NO_WRAP)
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, raw, 0, 12))

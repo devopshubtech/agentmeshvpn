@@ -16,6 +16,7 @@ import android.os.ParcelFileDescriptor
 import io.agentmesh.control.App
 import io.agentmesh.control.MainActivity
 import io.agentmesh.control.data.ApiException
+import io.agentmesh.control.data.ApprovalPending
 import io.agentmesh.control.data.SessionGrant
 import io.agentmesh.tunnel.Engine
 import io.agentmesh.tunnel.Tunnel
@@ -35,6 +36,8 @@ import kotlinx.coroutines.launch
 sealed interface VpnStatus {
     data object Idle : VpnStatus
     data class Connecting(val deviceName: String) : VpnStatus
+    /** The owner of the server has not approved this phone yet; connects by itself once they do. */
+    data class WaitingApproval(val deviceName: String) : VpnStatus
     data class Reconnecting(val deviceName: String, val attempt: Int, val reason: String) : VpnStatus
     data class Connected(
         val deviceName: String,
@@ -45,7 +48,10 @@ sealed interface VpnStatus {
         val flows: Long,
         val failedFlows: Long,
     ) : VpnStatus
-    data class Failed(val message: String) : VpnStatus
+    /** Every exit node is offline: the app keeps the VPN up and connects again as soon as one is back. */
+    data class WaitingExitNode(val deviceName: String, val wasConnected: Boolean) : VpnStatus
+    /** [code] is the server's reason (e.g. connect_limit_reached) so the screen can offer the right button. */
+    data class Failed(val message: String, val code: String = "", val profileId: String = "") : VpnStatus
 }
 
 /**
@@ -158,7 +164,7 @@ class ExitVpnService : VpnService() {
                     continue
                 }
                 _status.value = VpnStatus.Connected(deviceName, sessionId, since, eng.bytesUp(), eng.bytesDown(), eng.flows(), eng.failedFlows())
-                notify("Via $deviceName · ↑ ${human(eng.bytesUp())} ↓ ${human(eng.bytesDown())}")
+                notify("Connected to AgentMesh exit node $deviceName · ↑ ${human(eng.bytesUp())} ↓ ${human(eng.bytesDown())}")
                 delay(1000)
             }
         }
@@ -174,7 +180,7 @@ class ExitVpnService : VpnService() {
             _status.value = VpnStatus.Reconnecting(deviceName, attempt, why)
             notify("Reconnecting to $deviceName (attempt $attempt)…")
             val grant = try {
-                openSession() ?: return false
+                openSession(reconnect = true) ?: return false
             } catch (e: Exception) {
                 why = "Server unreachable: ${e.message}"
                 null
@@ -202,28 +208,64 @@ class ExitVpnService : VpnService() {
      * null (after shutting down) when the server says no for good: link
      * revoked/expired or profile deleted. Throws on transient failures.
      */
-    private suspend fun openSession(): SessionGrant? {
+    private suspend fun openSession(reconnect: Boolean = false): SessionGrant? {
         val app = application as App
         val profile = app.profiles.get(profileId) ?: return null.also { shutdown("Saved server was deleted") }
-        val grant = try {
-            app.connect.open(profile, "Android ${Build.MANUFACTURER} ${Build.MODEL}")
-        } catch (e: ApiException) {
-            // The server answered "no" (link revoked/expired, device offline): retrying will not help.
-            userStopped = true
-            shutdown(e.message)
-            return null
+        val waitUntil = System.currentTimeMillis() + APPROVAL_WAIT_MS
+        var granted: SessionGrant? = null
+        while (granted == null) {
+            try {
+                granted = app.connect.open(profile, "Android ${Build.MANUFACTURER} ${Build.MODEL}", reconnect)
+            } catch (e: ApprovalPending) {
+                // The owner gets an alert; keep asking until they answer.
+                if (userStopped) return null
+                if (System.currentTimeMillis() > waitUntil) {
+                    userStopped = true
+                    shutdown("AgentMesh has not answered yet. Please try again a little later.")
+                    return null
+                }
+                _status.value = VpnStatus.WaitingApproval(e.deviceName.ifBlank { deviceName })
+                notify("You are in the queue. AgentMesh will connect your device soon.")
+                delay(APPROVAL_POLL_MS)
+                if (userStopped) return null
+            } catch (e: ApiException) {
+                if (e.code == "exit_node_offline") {
+                    // No exit node is online: wait patiently (the VPN stays up, nothing leaks) and try again.
+                    if (userStopped) return null
+                    _status.value = VpnStatus.WaitingExitNode(deviceName, wasConnected = reconnect)
+                    notify(if (reconnect) "Exit node offline. Waiting for one to come online…" else "Waiting for an exit node to come online…")
+                    delay(EXIT_WAIT_POLL_MS)
+                    if (userStopped) return null
+                } else {
+                    // The server answered "no" (link revoked/expired, not allowed, limit reached): retrying will not help.
+                    userStopped = true
+                    shutdown(friendly(e), e.code)
+                    return null
+                }
+            }
         }
+        val grant: SessionGrant = granted
         deviceName = grant.deviceName.ifBlank { deviceName }
+        _connectsLeft.value = grant.connectsLeft
+        _connectsMax.value = grant.connectsMax
         app.profiles.get(profileId)?.let {
             app.profiles.upsert(it.copy(deviceName = deviceName, lastConnectedAt = System.currentTimeMillis()))
         }
         return grant
     }
 
+    /** The words the phone's owner sees for each answer the server can give. */
+    private fun friendly(e: ApiException): String = when (e.code) {
+        "connect_limit_reached" -> "Your limit is reached. Request more connections to continue."
+        "access_denied" -> "AgentMesh has not allowed this device."
+        "access_expired" -> "Your access has ended. Request access again to continue."
+        else -> e.message
+    }
+
     /** Opens a fresh session and (re)builds the VPN. Returns true when connected. */
     private suspend fun openAndConnect(attemptReason: String?): Boolean {
         val grant = try {
-            openSession() ?: return false
+            openSession(reconnect = attemptReason != null) ?: return false
         } catch (e: Exception) {
             if (attemptReason == null) reconnect("Server unreachable: ${e.message}")
             return false
@@ -276,13 +318,13 @@ class ExitVpnService : VpnService() {
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
     }
 
-    private fun shutdown(error: String?) {
+    private fun shutdown(error: String?, code: String = "") {
         monitor?.cancel()
         unwatchNetwork()
         engine?.stop()
         engine = null
         currentEngine = null
-        _status.value = if (error == null) VpnStatus.Idle else VpnStatus.Failed(error)
+        _status.value = if (error == null) VpnStatus.Idle else VpnStatus.Failed(error, code, profileId)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -343,12 +385,23 @@ class ExitVpnService : VpnService() {
         // (traffic held, nothing leaks) for up to 10 minutes before giving up.
         private val RELAY_RETRY_S = listOf(0L, 1L, 2L, 3L, 5L, 10L, 15L, 30L)
         private const val GIVE_UP_AFTER_MS = 10 * 60 * 1000L
+        private const val APPROVAL_POLL_MS = 3000L
+        private const val EXIT_WAIT_POLL_MS = 5000L
+        private const val APPROVAL_WAIT_MS = 15 * 60 * 1000L
         private val LOCAL_RANGES = listOf(
             "10.0.0.0" to 8, "172.16.0.0" to 12, "192.168.0.0" to 16, "169.254.0.0" to 16, "100.64.0.0" to 10,
         )
 
         private val _status = MutableStateFlow<VpnStatus>(VpnStatus.Idle)
         val status: StateFlow<VpnStatus> = _status
+
+        private val _connectsLeft = MutableStateFlow<Int?>(null)
+        /** Connections the owner still allows this phone (null = unlimited / unknown). */
+        val connectsLeft: StateFlow<Int?> = _connectsLeft
+
+        private val _connectsMax = MutableStateFlow<Int?>(null)
+        /** The phone's whole allowance (null = unlimited / unknown). */
+        val connectsMax: StateFlow<Int?> = _connectsMax
 
         /** The running engine, for the in-app "what is my IP" check. */
         @Volatile var currentEngine: Engine? = null

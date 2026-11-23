@@ -17,6 +17,15 @@ final class ProfileStore {
 
     func get(_ id: String) -> ConnectProfile? { all().first { $0.id == id } }
 
+    /// A random id made once per install. The server uses it to recognise this
+    /// phone, so the owner can approve it and limit how often it connects.
+    func clientId() -> String {
+        if let id = defaults.string(forKey: "client_id") { return id }
+        let id = UUID().uuidString
+        defaults.set(id, forKey: "client_id")
+        return id
+    }
+
     func upsert(_ p: ConnectProfile) {
         save(all().filter { $0.id != p.id } + [p])
     }

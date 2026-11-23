@@ -30,11 +30,12 @@ func (s *Server) createConnectKey(w http.ResponseWriter, r *http.Request) error 
 	var in struct {
 		Label      string `json:"label"`
 		ExpiresInS int    `json:"expires_in_s"`
+		sessions.Rule
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	k, err := s.RemoteSessions.CreateConnectKey(r.Context(), s.actor(r, p), id, in.Label, in.ExpiresInS, s.GatewayURL, s.RendezvousURL)
+	k, err := s.RemoteSessions.CreateConnectKey(r.Context(), s.actor(r, p), id, in.Label, in.ExpiresInS, in.Rule, s.GatewayURL, s.RendezvousURL)
 	if err != nil {
 		return err
 	}
@@ -84,6 +85,10 @@ func (s *Server) openConnectSession(w http.ResponseWriter, r *http.Request) erro
 	key := strings.TrimSpace(r.Header.Get(ConnectKeyHeader))
 	var in struct {
 		ClientLabel string `json:"client_label"`
+		// ClientID is a stable random id the app generates once per install.
+		ClientID   string `json:"client_id"`
+		ClientName string `json:"client_name"`
+		Reconnect  bool   `json:"reconnect"`
 	}
 	if r.ContentLength != 0 {
 		if err := httpx.DecodeJSON(w, r, &in); err != nil {
@@ -94,17 +99,91 @@ func (s *Server) openConnectSession(w http.ResponseWriter, r *http.Request) erro
 		in.ClientLabel = r.UserAgent()
 	}
 	relayURL := strings.TrimRight(s.GatewayURL, "/") + agentapi.PathRelay
-	c, err := s.RemoteSessions.OpenWithKey(r.Context(), key, in.ClientLabel, ip, httpx.RequestID(r.Context()), relayURL)
+	res, err := s.RemoteSessions.OpenWithKey(r.Context(), sessions.OpenInput{
+		Key: key, ClientID: in.ClientID, ClientLabel: in.ClientLabel, ClientName: in.ClientName, IP: ip,
+		RequestID: httpx.RequestID(r.Context()), RelayURL: relayURL, Reconnect: in.Reconnect,
+	})
+	switch {
+	case errors.Is(err, sessions.ErrInvalidConnectKey):
+		return httpx.WithCode(http.StatusUnauthorized, "invalid_connect_key", "this connect link is invalid, expired or was revoked")
+	case errors.Is(err, sessions.ErrClientIDRequired):
+		return httpx.WithCode(http.StatusForbidden, "app_update_required", "this server asks the owner to approve each phone; please update the AgentMesh app")
+	case errors.Is(err, sessions.ErrAccessDenied):
+		return httpx.WithCode(http.StatusForbidden, "access_denied", "AgentMesh has not allowed this device to connect")
+	case errors.Is(err, sessions.ErrAccessExpired):
+		return httpx.WithCode(http.StatusForbidden, "access_expired", "Your access has ended. Request access again to continue.")
+	case errors.Is(err, sessions.ErrLimitReached):
+		return httpx.WithCode(http.StatusForbidden, "connect_limit_reached", "Your limit is reached. Request more connections to continue.")
+	case errors.Is(err, sessions.ErrNoExitNode):
+		return httpx.WithCode(http.StatusServiceUnavailable, "exit_node_offline", "No AgentMesh exit node is online right now. Waiting for one to come online.")
+	case err != nil:
+		return err
+	}
+	if res.Pending != nil {
+		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
+			"status": "pending", "request_id": res.Pending.ID, "device_name": res.Pending.DeviceName,
+			"message": "waiting in the queue; connecting soon",
+		})
+		return nil
+	}
+	c := res.Created
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"status":     "approved",
+		"session_id": c.Session.ID, "device_id": c.Session.DeviceID, "device_name": c.DeviceName,
+		"relay_url": c.RelayURL, "ticket": c.Ticket, "ticket_expires_at": c.TicketExpiresAt,
+		"connects_left": res.ConnectsLeft, "connects_max": res.ConnectsMax,
+	})
+	return nil
+}
+
+// connectStatus is public: the connect key is the credential.
+func (s *Server) connectStatus(w http.ResponseWriter, r *http.Request) error {
+	if ok, wait := s.connectRL.Allow(httpx.ClientIP(r.Context())); !ok {
+		return httpx.RateLimited(wait)
+	}
+	var in struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.RemoteSessions.StatusWithKey(r.Context(), strings.TrimSpace(r.Header.Get(ConnectKeyHeader)), in.ClientID)
 	if errors.Is(err, sessions.ErrInvalidConnectKey) {
 		return httpx.WithCode(http.StatusUnauthorized, "invalid_connect_key", "this connect link is invalid, expired or was revoked")
 	}
 	if err != nil {
 		return err
 	}
-	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-		"session_id": c.Session.ID, "device_id": c.Session.DeviceID, "device_name": c.DeviceName,
-		"relay_url": c.RelayURL, "ticket": c.Ticket, "ticket_expires_at": c.TicketExpiresAt,
-	})
+	httpx.WriteJSON(w, http.StatusOK, st)
+	return nil
+}
+
+// requestMore is public: an approved phone asks the owner for more connections.
+func (s *Server) requestMore(w http.ResponseWriter, r *http.Request) error {
+	ip := httpx.ClientIP(r.Context())
+	if ok, wait := s.connectRL.Allow(ip); !ok {
+		return httpx.RateLimited(wait)
+	}
+	var in struct {
+		ClientID   string `json:"client_id"`
+		ClientName string `json:"client_name"`
+		Message    string `json:"message"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.RemoteSessions.RequestMore(r.Context(), strings.TrimSpace(r.Header.Get(ConnectKeyHeader)), in.ClientID, in.Message, in.ClientName, ip)
+	switch {
+	case errors.Is(err, sessions.ErrInvalidConnectKey):
+		return httpx.WithCode(http.StatusUnauthorized, "invalid_connect_key", "this connect link is invalid, expired or was revoked")
+	case errors.Is(err, sessions.ErrUnknownClient):
+		return httpx.WithCode(http.StatusNotFound, "unknown_phone", "this phone has not connected with this link yet")
+	case errors.Is(err, sessions.ErrAccessDenied):
+		return httpx.WithCode(http.StatusForbidden, "access_denied", "the owner has not allowed this phone")
+	case err != nil:
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusOK, st)
 	return nil
 }
 
@@ -123,11 +202,12 @@ func (s *Server) createPairCode(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Label      string `json:"label"`
 		ExpiresInS int    `json:"expires_in_s"`
+		sessions.Rule
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	pc, err := s.RemoteSessions.CreatePairCode(r.Context(), s.actor(r, p), id, in.Label, time.Duration(in.ExpiresInS)*time.Second)
+	pc, err := s.RemoteSessions.CreatePairCode(r.Context(), s.actor(r, p), id, in.Label, time.Duration(in.ExpiresInS)*time.Second, in.Rule)
 	if err != nil {
 		return err
 	}

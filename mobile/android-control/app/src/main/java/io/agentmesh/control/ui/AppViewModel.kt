@@ -5,6 +5,8 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.agentmesh.control.App
+import io.agentmesh.control.BuildConfig
+import io.agentmesh.control.data.ClientStatus
 import io.agentmesh.control.data.ConnectProfile
 import io.agentmesh.control.data.Links
 import io.agentmesh.control.data.QrImage
@@ -24,11 +26,26 @@ data class UiState(
     val exitIp: String? = null,
     val checkingIp: Boolean = false,
     val pairing: Boolean = false,
+    /** What the owner allows each saved server's phone (profile id -> status). */
+    val access: Map<String, ClientStatus> = emptyMap(),
+    val requesting: Set<String> = emptySet(),
+    /** The person's own name (asked on first launch). */
+    val personName: String = "",
+    val askName: Boolean = false,
+    /** Set while the "Request more" box is open for this server. */
+    val requestFor: ConnectProfile? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = (app as App).profiles
-    private val _state = MutableStateFlow(UiState(profiles = store.all()))
+    private val _state = MutableStateFlow(UiState(profiles = store.all()).withName())
+
+    private fun UiState.withName(): UiState {
+        // The admin's own phone does not ask: it is simply "Admin".
+        if (store.personName().isBlank() && BuildConfig.FLAVOR == "admin") store.setPersonName("Admin")
+        val name = store.personName()
+        return copy(personName = name, askName = name.isBlank())
+    }
     val state: StateFlow<UiState> = _state
 
     private fun reload() = _state.update { it.copy(profiles = store.all()) }
@@ -121,6 +138,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refresh() = reload()
+
+    fun saveName(name: String) {
+        if (name.isBlank()) return
+        store.setPersonName(name)
+        _state.update { it.copy(personName = store.personName(), askName = false) }
+    }
+
+    fun askName(show: Boolean) = _state.update { it.copy(askName = show) }
+
+    /** Opens (or closes, with null) the box for asking for more connections. */
+    fun openRequest(p: ConnectProfile?) = _state.update { it.copy(requestFor = p) }
+
+    /** Looks up "4 of 5 connections left" for every saved server. */
+    fun refreshAccess() {
+        val app = getApplication<App>()
+        viewModelScope.launch {
+            for (p in store.all()) {
+                val st = runCatching { app.connect.status(p) }.getOrNull() ?: continue
+                val before = _state.value.access[p.id]
+                _state.update { it.copy(access = it.access + (p.id to st)) }
+                // They were waiting for more connections and now have some.
+                if (before != null && before.moreRequested && !st.moreRequested && (st.connectsLeft ?: 1) > 0 && st.status == "approved") {
+                    toast("More connections were added. You can connect now.")
+                }
+            }
+        }
+    }
+
+    /** Asks the owner for more connections. */
+    fun requestMore(p: ConnectProfile, message: String = "") {
+        val app = getApplication<App>()
+        _state.update { it.copy(requesting = it.requesting + p.id) }
+        viewModelScope.launch {
+            val r = runCatching { app.connect.requestMore(p, message.trim()) }
+            _state.update { s ->
+                s.copy(requesting = s.requesting - p.id, access = r.getOrNull()?.let { s.access + (p.id to it) } ?: s.access)
+            }
+            toast(if (r.isSuccess) "Request sent. You are in the queue. AgentMesh will let you know here as soon as more connections are added." else (r.exceptionOrNull()?.message ?: "Could not send the request"))
+        }
+    }
 
     fun checkExitIp() {
         val eng = ExitVpnService.currentEngine ?: return toast("Not connected")

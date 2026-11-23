@@ -165,6 +165,34 @@ Inside the relay WebSocket, the two ends speak yamux with the `exitproto` stream
 
 ---
 
+
+## Phone access: approval, limits and failover
+
+Phones without an account connect with a **connect key** (QR code or link) or a **6-digit pairing code**. Each phone is recognised by a random `client_id` its app creates once. The owner (a user with `devices.manage`) approves each phone and says how many times it may connect.
+
+**Public endpoints**
+
+| Method & path | Notes |
+|---|---|
+| `POST /v1/connect/session` | Header `X-AgentMesh-Connect-Key`. Body `{ "client_label", "client_id", "reconnect" }`. `201` = session (`relay_url`, `ticket`, `device_name`, `connects_left` or `null` for unlimited). `202 { "status": "pending", "request_id" }` = waiting for the owner; ask again every few seconds. `reconnect: true` means "I am re-opening a connection I already had" (network change, another exit node), which does not use up the allowance. |
+| `POST /v1/connect/pair` | Body `{ "code", "client_label" }`; exchanges a pairing code for a connect key. |
+
+Errors (`403`): `access_denied` (denied or blocked), `access_expired`, `connect_limit_reached`, `app_update_required` (an old app without `client_id` on a link that needs approval). `401 invalid_connect_key` for a bad, expired or revoked key.
+
+**Exit-node failover.** A key prefers its own device. When that device is offline (or refuses), the server opens the session on the least busy other active device that allows exit-node sessions (keys created with `"pool": false` stay on their own device).
+
+**Owner endpoints** (`devices.manage`)
+
+| Method & path | Notes |
+|---|---|
+| `POST /v1/devices/{id}/connect-keys`, `POST /v1/devices/{id}/pair-codes` | Besides `label` / `expires_in_s`, accept the default rule: `"require_approval"` (default `true`), `"default_max_connects"` (integer, omit for unlimited), `"pool"` (default `true`). |
+| `GET /v1/access?status=pending\|approved\|denied\|blocked` | Phones, newest first: `{ id, name, ip, status, device_name, key_label, max_connects, connects_used, connects_left, expires_at, active_sessions, ... }`. |
+| `POST /v1/access/{id}/approve` | Body `{ "max_connects": 5 \| null (unlimited), "expires_in_s": 0, "name": "Ravi's phone" }`. Approving again starts a fresh allowance. |
+| `POST /v1/access/{id}/deny`, `POST /v1/access/{id}/block` | Also ends the phone's live sessions. |
+| `DELETE /v1/access/{id}` | Forget the phone; it must ask again. |
+
+Live events (`GET /v1/events`): `access.request` when a new phone asks to connect, `access.updated` when its access changes. The admin app turns `access.request` into a notification.
+
 ## Enrollment tokens
 
 ```ts

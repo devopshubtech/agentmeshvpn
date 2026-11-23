@@ -17,7 +17,7 @@ import androidx.activity.viewModels
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import io.agentmesh.control.data.ConnectProfile
-import io.agentmesh.control.ui.AgentMeshApp
+import io.agentmesh.control.ui.RootContent
 import io.agentmesh.control.ui.AppViewModel
 
 class MainActivity : ComponentActivity() {
@@ -44,7 +44,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { AgentMeshApp(vm, onScan = ::scan, onPickImage = ::pickImage, onConnect = ::requestConnect) }
+        setContent { RootContent(vm, onScan = ::scan, onPickImage = ::pickImage, onConnect = ::requestConnect) }
+        // The admin app needs to be allowed to show "a phone wants to connect" alerts.
+        if (BuildConfig.FLAVOR == "admin" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         if (savedInstanceState == null) handleDeepLink(intent)
     }
 

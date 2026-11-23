@@ -9,6 +9,9 @@ struct SessionGrant {
     var serverUrl: String
 }
 
+/// The owner of the server has not approved this phone yet.
+struct ApprovalPending: Error {}
+
 /// Opens sessions with a connect key (no login) and exchanges pairing codes.
 /// Same protocol as the Android app (ConnectApi.kt). If the saved address stops
 /// answering (the free tunnel restarted with a new address), the current
@@ -23,17 +26,36 @@ final class ConnectAPI {
 
     init(store: ProfileStore) { self.store = store }
 
-    func open(_ p: ConnectProfile) async throws -> SessionGrant {
+    /// While the owner has not approved this phone, keeps asking every few
+    /// seconds (up to 15 minutes) and returns once they do. `reconnect` is true
+    /// when re-opening a connection the phone already had: those do not use up
+    /// the number of connections the owner allowed.
+    func open(_ p: ConnectProfile, reconnect: Bool = false) async throws -> SessionGrant {
+        let deadline = Date().addingTimeInterval(15 * 60)
+        while true {
+            do {
+                return try await openOnce(p, reconnect: reconnect)
+            } catch is ApprovalPending {
+                if Date() > deadline {
+                    throw APIError(status: 403, code: "approval_timeout", message: "The owner did not approve this phone in time. Try again later.")
+                }
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    private func openOnce(_ p: ConnectProfile, reconnect: Bool) async throws -> SessionGrant {
         guard let key = store.key(p) else {
             throw APIError(status: 0, code: "no_key", message: "The connect key for \(p.name) is missing. Scan the QR code again.")
         }
         do {
-            return try await openAt(p.serverUrl, key: key)
+            return try await openAt(p.serverUrl, key: key, reconnect: reconnect)
         } catch {
             // A clear answer from the server (e.g. link revoked) is final.
             if let e = error as? APIError, (400..<500).contains(e.status) { throw e }
+            if error is ApprovalPending { throw error }
             guard !p.rendezvousUrl.isEmpty, let fresh = try? await resolve(p.rendezvousUrl), fresh != p.serverUrl else { throw error }
-            let g = try await openAt(fresh, key: key)
+            let g = try await openAt(fresh, key: key, reconnect: reconnect)
             var updated = store.get(p.id) ?? p
             updated.serverUrl = fresh
             store.upsert(updated)
@@ -70,7 +92,7 @@ final class ConnectAPI {
 
     // MARK: - private
 
-    private func post(_ url: String, body: [String: String], headers: [String: String] = [:]) async throws -> (Int, [String: Any]) {
+    private func post(_ url: String, body: [String: Any], headers: [String: String] = [:]) async throws -> (Int, [String: Any]) {
         guard let u = URL(string: url) else { throw APIError(status: 0, code: "bad_url", message: "Invalid server address") }
         var req = URLRequest(url: u)
         req.httpMethod = "POST"
@@ -91,9 +113,11 @@ final class ConnectAPI {
         return (status, json)
     }
 
-    private func openAt(_ server: String, key: String) async throws -> SessionGrant {
-        let (_, o) = try await post("\(server)/v1/connect/session", body: ["client_label": AppConfig.clientLabel],
-                                    headers: ["X-AgentMesh-Connect-Key": key])
+    private func openAt(_ server: String, key: String, reconnect: Bool) async throws -> SessionGrant {
+        let (status, o) = try await post("\(server)/v1/connect/session",
+                                         body: ["client_label": AppConfig.clientLabel, "client_id": store.clientId(), "reconnect": reconnect],
+                                         headers: ["X-AgentMesh-Connect-Key": key])
+        if status == 202 || (o["status"] as? String) == "pending" { throw ApprovalPending() }
         guard let ticket = o["ticket"] as? String, let sid = o["session_id"] as? String else {
             throw URLError(.cannotParseResponse)
         }
